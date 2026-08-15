@@ -1,0 +1,15 @@
+# Normalise line endings to LF in the repository.
+#
+# This is a real CI lesson, not housekeeping. You are on Windows, where git
+# checks files out with CRLF endings. GitHub's runners are Linux, where a
+# stray \r breaks shell scripts in a way that produces genuinely baffling
+# errors ("$'\r': command not found"). Storing LF in the repo means the
+# runner always sees LF, whatever your editor does locally.
+#
+# See COURSE/TROUBLESHOOTING.md, "Windows jobs fail, Linux passes".
+* text=auto eol=lf
+
+# Files that must never be mangled.
+*.png binary
+*.jpg binary
+*.ico binary
