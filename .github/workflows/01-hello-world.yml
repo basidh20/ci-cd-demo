@@ -1,0 +1,98 @@
+# =============================================================================
+# LESSON 01 — Hello World: the anatomy of a workflow
+# =============================================================================
+# Read COURSE/01-anatomy-of-a-workflow.md alongside this file.
+#
+# HOW TO RUN IT: this workflow only triggers manually. Push it, then go to
+# your repo -> Actions tab -> "01 - Hello World" -> "Run workflow".
+#
+# Every workflow file has exactly three required top-level keys:
+#   name:  what humans see in the Actions tab
+#   on:    what makes it start
+#   jobs:  what it does
+# Everything else in Actions is detail hanging off those three.
+# =============================================================================
+
+name: 01 - Hello World
+
+# WHEN. `workflow_dispatch` means "a human presses a button".
+# It is the only trigger that is completely safe to experiment with, because
+# nothing happens until you say so.
+on:
+  workflow_dispatch:
+    inputs:
+      student_name:
+        description: What should the pipeline call you?
+        required: false
+        default: student
+        type: string
+
+# WHAT. A workflow contains one or more jobs. Jobs run in PARALLEL by default,
+# each on its own freshly created virtual machine.
+jobs:
+  # `greet` is the job ID — lowercase, used by other jobs to refer to this one.
+  greet:
+    name: Say hello
+    # Every job MUST say what kind of machine it wants. GitHub boots a clean
+    # VM for you, runs your steps, then destroys it. Nothing survives.
+    runs-on: ubuntu-latest
+
+    # Steps run IN ORDER, top to bottom, on that one machine.
+    steps:
+      # A step with `run:` executes a shell command.
+      - name: Print a greeting
+        run: echo "Hello, ${{ inputs.student_name }}! Your first workflow is alive."
+
+      # `${{ ... }}` is expression syntax. GitHub substitutes the value BEFORE
+      # the shell ever sees the line. More on this in Lesson 05.
+      - name: Look around the machine
+        run: |
+          echo "Runner OS       : $RUNNER_OS"
+          echo "Repository      : $GITHUB_REPOSITORY"
+          echo "Triggered by    : $GITHUB_ACTOR"
+          echo "Event name      : $GITHUB_EVENT_NAME"
+          echo "Run number      : $GITHUB_RUN_NUMBER"
+          echo "Working dir     : $(pwd)"
+          echo "Disk space      : $(df -h / | tail -1 | awk '{print $4}') free"
+          echo "CPU cores       : $(nproc)"
+
+      # The `|` above starts a multi-line block. Everything indented under it
+      # is one shell script, run by `bash -e` — so the FIRST failing command
+      # aborts the step, and a failed step fails the job.
+      - name: Prove that steps share a machine
+        run: |
+          echo "written by step 3" > /tmp/note.txt
+          echo "Created /tmp/note.txt"
+
+      - name: The next step can read the previous step's files
+        run: cat /tmp/note.txt
+
+      # ...but NOT the previous step's shell variables. Each `run:` is a
+      # separate shell process. This is the #1 beginner surprise.
+      - name: Shell variables do NOT survive between steps
+        run: |
+          MY_VAR="I will be forgotten"
+          echo "Inside this step MY_VAR is: $MY_VAR"
+
+      - name: Proof — the variable is gone
+        run: |
+          echo "In a new step MY_VAR is: '${MY_VAR:-(empty!)}'"
+          echo "To pass values between steps, use GITHUB_OUTPUT — see Lesson 05."
+
+      # $GITHUB_STEP_SUMMARY is a file. Anything you append to it renders as
+      # Markdown on the run's summary page. Underused and wonderful.
+      - name: Write a report humans will actually read
+        run: |
+          {
+            echo "## Hello, ${{ inputs.student_name }}"
+            echo ""
+            echo "You just ran your first GitHub Actions workflow."
+            echo ""
+            echo "| Fact | Value |"
+            echo "| --- | --- |"
+            echo "| Runner OS | \`$RUNNER_OS\` |"
+            echo "| Repository | \`$GITHUB_REPOSITORY\` |"
+            echo "| Run number | \`$GITHUB_RUN_NUMBER\` |"
+            echo ""
+            echo "Next up: **Lesson 02** — making workflows start by themselves."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,127 @@
+# =============================================================================
+# LESSON 02 — Events: what makes a workflow start
+# =============================================================================
+# Read COURSE/02-events-and-triggers.md alongside this file.
+#
+# A workflow with a bad `on:` block is the most common way to waste an
+# afternoon. It never runs, GitHub says nothing, and there is no error to
+# read — because from GitHub's point of view, nothing happened.
+#
+# This workflow reacts to FOUR different events and prints which one woke it.
+# =============================================================================
+
+name: 02 - Triggers Playground
+
+on:
+  # ---------------------------------------------------------------------
+  # 1. PUSH — someone pushed commits to a branch.
+  # ---------------------------------------------------------------------
+  push:
+    branches:
+      - main
+      # Wildcards: `*` matches within one path segment, `**` across segments.
+      - 'lesson/**'
+    # `paths` narrows it further: only run when these files changed.
+    # Without this, every README typo burns runner minutes.
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - '.github/workflows/02-triggers.yml'
+    # `paths-ignore` is the inverse. You may use one or the other, not both.
+
+  # ---------------------------------------------------------------------
+  # 2. PULL REQUEST — a PR was opened or updated against these branches.
+  # NOTE: `branches` here means the TARGET branch (where it will merge INTO),
+  # not the source branch. This trips up nearly everyone once.
+  # ---------------------------------------------------------------------
+  pull_request:
+    branches: [main]
+    # Default types are: opened, synchronize, reopened.
+    # `synchronize` = new commits pushed to an existing PR.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+  # ---------------------------------------------------------------------
+  # 3. SCHEDULE — cron. Times are ALWAYS UTC. There is no timezone option.
+  # ---------------------------------------------------------------------
+  schedule:
+    #        min  hour  day-of-month  month  day-of-week
+    - cron: '30    6      *            *      1-5'
+    # -> 06:30 UTC, Monday to Friday.
+    #
+    # Three things that will bite you:
+    #   a) Scheduled runs only fire on the DEFAULT branch.
+    #   b) GitHub queues them on shared infrastructure; being 5-20 minutes
+    #      late is normal. Never schedule something time-critical.
+    #   c) In a PUBLIC repo, schedules are disabled after 60 days of no
+    #      repository activity. GitHub emails you first.
+
+  # ---------------------------------------------------------------------
+  # 4. MANUAL — with typed inputs. `choice` renders as a dropdown.
+  # ---------------------------------------------------------------------
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment are we pretending to target?
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      dry_run:
+        description: Only print what would happen
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  identify-the-event:
+    name: Which event woke me up?
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the trigger
+        run: |
+          echo "Event      : ${{ github.event_name }}"
+          echo "Ref        : ${{ github.ref }}"
+          echo "Ref name   : ${{ github.ref_name }}"
+          echo "SHA        : ${{ github.sha }}"
+          echo "Actor      : ${{ github.actor }}"
+
+      # `if:` on a step means "only run this step when the condition holds".
+      # Inside `if:`, you are already in expression context, so the ${{ }}
+      # wrapper is optional. Both styles below are correct.
+      - name: This only runs for pushes
+        if: github.event_name == 'push'
+        run: |
+          echo "A push to ${{ github.ref_name }}."
+          echo "Commits in this push: ${{ github.event.head_commit.message }}"
+
+      - name: This only runs for pull requests
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}"
+          echo "From : ${{ github.head_ref }}"
+          echo "Into : ${{ github.base_ref }}"
+          echo "Draft: ${{ github.event.pull_request.draft }}"
+
+      - name: This only runs on a schedule
+        if: github.event_name == 'schedule'
+        run: echo "The clock did it. Nobody pushed anything."
+
+      - name: This only runs when a human clicked the button
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Target environment: ${{ inputs.environment }}"
+          echo "Dry run?          : ${{ inputs.dry_run }}"
+
+      # Combining conditions. `&&` `||` `!` work as you would expect.
+      - name: Only a real production deploy would get here
+        if: github.event_name == 'workflow_dispatch' && inputs.environment == 'production' && !inputs.dry_run
+        run: echo "This is where a genuine deploy would go."
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Event: \`${{ github.event_name }}\`"
+            echo ""
+            echo "Ref \`${{ github.ref_name }}\` at commit \`${GITHUB_SHA:0:7}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

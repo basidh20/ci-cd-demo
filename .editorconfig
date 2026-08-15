@@ -1,0 +1,15 @@
+# Keeps editors from inserting tab characters, which YAML forbids outright
+# and this project's linter rejects in JS. See COURSE/00-orientation.md.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# Markdown uses two trailing spaces for a hard line break.
+trim_trailing_whitespace = false

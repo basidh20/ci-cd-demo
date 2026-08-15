@@ -1,0 +1,157 @@
+# =============================================================================
+# LESSON 07 — Caching and artifacts: two different things people confuse
+# =============================================================================
+# Read COURSE/07-cache-and-artifacts.md alongside this file.
+#
+#   CACHE     = a speed optimisation. Reusable INPUTS (node_modules, ~/.npm).
+#               If it vanishes, your build is slower but still correct.
+#
+#   ARTIFACT  = a deliverable. The OUTPUTS you want to keep or hand to a
+#               later job (dist/, test reports, binaries, screenshots).
+#               If it vanishes, you have lost something real.
+#
+# One-line test: could you delete it and still get the same result, just
+# slower? Then it is a cache. Otherwise it is an artifact.
+# =============================================================================
+
+name: 07 - Cache and Artifacts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # JOB 1 — build, and publish the result as an artifact
+  # -------------------------------------------------------------------------
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # THE EASY WAY. This is `actions/cache` wearing a disguise: it
+          # caches the npm download directory, keyed on your lockfile hash.
+          # For 95% of Node projects, this line is all the caching you need.
+          cache: npm
+
+      # THE MANUAL WAY, shown so you understand what the line above does.
+      # (Redundant here — kept for teaching. Do not ship both.)
+      - name: Manual cache, for illustration
+        id: manual-cache
+        uses: actions/cache@v4
+        with:
+          # WHAT to cache.
+          path: |
+            ~/.npm
+            .cache/custom
+          # THE KEY — the most important part. `hashFiles()` returns a hash
+          # of the matched files' contents. Change the lockfile, change the
+          # key, get a fresh cache. Exactly right.
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          # If the exact key misses, try these PREFIXES in order. A partial
+          # hit still saves most of the download.
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Did the cache hit?
+        run: |
+          echo "cache-hit: ${{ steps.manual-cache.outputs.cache-hit }}"
+          echo ""
+          echo "Facts worth memorising about caches:"
+          echo "  - They are IMMUTABLE. Same key = never overwritten."
+          echo "  - So NEVER key on something that changes while the content"
+          echo "    does not, and never on something static like 'npm-cache'"
+          echo "    (you would be stuck with the first version forever)."
+          echo "  - Evicted after 7 days unused, or when the repo passes 10 GB."
+          echo "  - A cache saved on a branch is NOT visible to other branches,"
+          echo "    but every branch can read caches from the default branch."
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Show what we produced
+        run: ls -la dist/
+
+      # UPLOAD AN ARTIFACT. This is how a file escapes the runner before it
+      # is destroyed, and how it reaches Job 2 below.
+      - name: Upload the built site
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: dist/
+          # Default is 90 days (or your repo's limit). Shorter = cheaper.
+          retention-days: 7
+          # error / warn / ignore — what to do when the path matches nothing.
+          # `error` catches a build that silently produced nothing.
+          if-no-files-found: error
+
+      # Artifact names must be UNIQUE within a run (a v4 change; v3 let you
+      # append to an existing artifact). In a matrix, put the matrix values
+      # in the name: name: site-${{ matrix.os }}-${{ matrix.node }}
+      - name: Upload build metadata separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info
+          path: dist/build-info.json
+
+  # -------------------------------------------------------------------------
+  # JOB 2 — a different machine, which downloads what Job 1 made
+  # -------------------------------------------------------------------------
+  verify:
+    name: Verify the artifact
+    runs-on: ubuntu-latest
+    # `needs:` makes this wait for `build`. Without it they run in parallel
+    # and this job would find nothing to download.
+    needs: build
+
+    steps:
+      # Deliberately NO checkout. This job never sees the source code —
+      # it only inspects the compiled output, the way a deploy job would.
+      - name: Download the site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: downloaded/
+
+      - name: Inspect it
+        run: |
+          echo "This machine has never seen our source code:"
+          ls -la
+          echo ""
+          echo "But it has the build output:"
+          ls -la downloaded/
+
+      - name: Sanity-check the HTML
+        run: |
+          test -f downloaded/index.html || { echo "index.html missing"; exit 1; }
+          grep -q "Quote of the Day" downloaded/index.html || {
+            echo "Page title missing from the build"; exit 1;
+          }
+          echo "Artifact looks correct."
+
+      - name: Read the build metadata
+        run: |
+          cat downloaded/build-info.json
+          COMMIT=$(node -p "require('./downloaded/build-info.json').commit")
+          echo "Built from commit: $COMMIT"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Artifact verified"
+            echo ""
+            echo "Files received:"
+            echo '```'
+            ls downloaded/
+            echo '```'
+            echo ""
+            echo "Download it yourself from the **Summary** page of this run."
+          } >> "$GITHUB_STEP_SUMMARY"

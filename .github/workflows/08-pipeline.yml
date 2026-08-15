@@ -1,0 +1,207 @@
+# =============================================================================
+# LESSON 08 — Wiring jobs into a pipeline: needs, outputs, conditions
+# =============================================================================
+# Read COURSE/08-pipelines-and-conditions.md alongside this file.
+#
+# The dependency graph this builds:
+#
+#         setup
+#        /  |  \
+#    lint test build          (three in parallel, all wait for setup)
+#        \  |  /
+#        package             (waits for all three)
+#           |
+#      +----+----+
+#      |         |
+#   deploy    notify         (deploy is conditional; notify always runs)
+#
+# Watch it draw itself in the Actions tab. The graph view is the best
+# documentation your pipeline will ever have.
+# =============================================================================
+
+name: 08 - Full Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# CONCURRENCY. Without this, pushing three commits quickly starts three runs
+# that race each other. This cancels the older ones.
+#
+# The group key here is "this workflow, on this branch". Use a key WITHOUT
+# cancel-in-progress for deploys — you want those to queue, not to be
+# killed halfway through writing to production.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # STAGE 1 — decide what this run should do, and publish it as job outputs.
+  # -------------------------------------------------------------------------
+  setup:
+    name: Decide what to do
+    runs-on: ubuntu-latest
+    # JOB OUTPUTS. Declared here, produced by a step below, consumed by
+    # later jobs through the `needs` context. This is how jobs talk —
+    # they cannot share files or variables, only outputs and artifacts.
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      should_deploy: ${{ steps.meta.outputs.should_deploy }}
+      quote_count: ${{ steps.meta.outputs.quote_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compute build metadata
+        id: meta
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          QUOTES=$(node -e "import('./src/lib/quotes.js').then(m => console.log(m.quotes.length))")
+
+          # Only deploy from main, and never from a pull request.
+          if [ "${{ github.ref }}" = "refs/heads/main" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            SHOULD_DEPLOY=true
+          else
+            SHOULD_DEPLOY=false
+          fi
+
+          echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
+          echo "should_deploy=$SHOULD_DEPLOY" >> "$GITHUB_OUTPUT"
+          echo "quote_count=$QUOTES"          >> "$GITHUB_OUTPUT"
+
+          echo "Version      : $VERSION"
+          echo "Should deploy: $SHOULD_DEPLOY"
+
+  # -------------------------------------------------------------------------
+  # STAGE 2 — three jobs that all depend on setup, so they run in parallel.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npm test
+
+  build:
+    name: Build v${{ needs.setup.outputs.version }}
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Stamp the version from setup's output
+        run: |
+          echo "Building version ${{ needs.setup.outputs.version }}"
+          echo "${{ needs.setup.outputs.version }}" > dist/VERSION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-v${{ needs.setup.outputs.version }}
+          path: dist/
+
+  # -------------------------------------------------------------------------
+  # STAGE 3 — waits for ALL THREE. A list in `needs:` means "all of these".
+  # -------------------------------------------------------------------------
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    # GOTCHA: `setup` is in this list even though lint/test/build already
+    # depend on it. Dependencies are NOT transitive for OUTPUTS — you can
+    # only read `needs.X.outputs` for a job named directly in your own
+    # `needs:`. Drop `setup` here and the artifact name below silently
+    # becomes "site-v", which fails with a baffling "artifact not found".
+    needs: [setup, lint, test, build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-v${{ needs.setup.outputs.version }}
+          path: dist/
+      - name: Report on upstream results
+        run: |
+          echo "lint  : ${{ needs.lint.result }}"
+          echo "test  : ${{ needs.test.result }}"
+          echo "build : ${{ needs.build.result }}"
+          ls -la dist/
+
+  # -------------------------------------------------------------------------
+  # STAGE 4 — conditional deployment.
+  # -------------------------------------------------------------------------
+  deploy:
+    name: Deploy (simulated)
+    runs-on: ubuntu-latest
+    needs: [setup, package]
+    # A job-level `if:`. When false, the job shows as "skipped" — grey, not
+    # red. Skipped is not failed.
+    if: needs.setup.outputs.should_deploy == 'true'
+    steps:
+      - name: Pretend to deploy
+        run: |
+          echo "Deploying version ${{ needs.setup.outputs.version }}"
+          echo "Containing ${{ needs.setup.outputs.quote_count }} quotes"
+          echo "(Lesson 11 does this for real, to GitHub Pages.)"
+
+  # -------------------------------------------------------------------------
+  # STAGE 5 — STATUS FUNCTIONS. The four that matter:
+  #
+  #   success()   default. True if everything needed succeeded.
+  #   failure()   true if any needed job failed.
+  #   cancelled() true if the run was cancelled.
+  #   always()    true no matter what. Even on cancellation.
+  #
+  # The moment you write ANY `if:` on a job, the implicit success() check
+  # disappears. So `if: github.ref == 'refs/heads/main'` alone will run even
+  # when the tests failed. Write `if: success() && github.ref == ...`.
+  # That single sentence prevents a whole category of broken deploys.
+  # -------------------------------------------------------------------------
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [setup, lint, test, build, package, deploy]
+    if: always()
+    steps:
+      - name: Collect every result
+        run: |
+          {
+            echo "## Pipeline result"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| setup   | ${{ needs.setup.result }} |"
+            echo "| lint    | ${{ needs.lint.result }} |"
+            echo "| test    | ${{ needs.test.result }} |"
+            echo "| build   | ${{ needs.build.result }} |"
+            echo "| package | ${{ needs.package.result }} |"
+            echo "| deploy  | ${{ needs.deploy.result }} |"
+            echo ""
+            echo "Version \`${{ needs.setup.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Shout if anything broke
+        if: contains(needs.*.result, 'failure')
+        run: |
+          echo "Something failed. In a real repo this step would post to"
+          echo "Slack, open an issue, or page someone."
+          exit 1

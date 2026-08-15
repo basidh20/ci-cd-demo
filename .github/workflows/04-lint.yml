@@ -1,0 +1,93 @@
+# =============================================================================
+# LESSON 04 — Parallel jobs, and what "failure" really means
+# =============================================================================
+# Read COURSE/04-jobs-and-failure.md alongside this file.
+#
+# Three jobs, no dependencies between them, so all three start at the same
+# moment on three separate machines. Watch the Actions graph while it runs —
+# seeing them light up in parallel is the moment jobs-vs-steps clicks.
+# =============================================================================
+
+name: 04 - Lint and Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # JOB A: blocking. If style is wrong, the whole run is red.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Style check (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+
+  # -------------------------------------------------------------------------
+  # JOB B: pre-flight check on the workflow files themselves.
+  # Needs no dependencies at all, so it is the fastest signal in the repo.
+  # -------------------------------------------------------------------------
+  workflow-syntax:
+    name: Workflow pre-flight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # No `npm ci` — this script has zero dependencies, so skip the install
+      # entirely. Every second you do not spend installing is a second of
+      # feedback you get back.
+      - name: Check workflow files
+        run: npm run check:workflows
+
+  # -------------------------------------------------------------------------
+  # JOB C: advisory. It reports problems but never blocks a merge.
+  # -------------------------------------------------------------------------
+  advisory-checks:
+    name: Advisory checks (non-blocking)
+    runs-on: ubuntu-latest
+    # `continue-on-error: true` at JOB level: this job may fail and the
+    # overall workflow still shows green.
+    #
+    # Use it for: new rules you are trialling, flaky external services,
+    # informational scans. Do NOT use it to silence a test you broke —
+    # that is how a suite quietly rots into decoration.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Count TODO comments
+        run: |
+          COUNT=$(grep -rn "TODO" src/ tests/ scripts/ --include="*.js" | wc -l || true)
+          echo "Found $COUNT TODO comments."
+          echo "### TODOs: $COUNT" >> "$GITHUB_STEP_SUMMARY"
+
+      # `continue-on-error` at STEP level: this step may fail without
+      # failing the job. Narrower and usually the better choice.
+      - name: A step that fails on purpose
+        continue-on-error: true
+        run: |
+          echo "About to exit 1 deliberately..."
+          exit 1
+
+      - name: Proof that the job kept going
+        run: echo "Still here. The failed step above did not stop me."
+
+      # `npm audit` fails the build when it finds vulnerabilities. On a
+      # zero-dependency project it finds none, but the pattern is real.
+      - name: Dependency audit
+        run: npm audit --audit-level=high

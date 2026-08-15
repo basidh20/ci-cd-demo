@@ -1,0 +1,136 @@
+# =============================================================================
+# LESSON 06 — Matrix builds: one job definition, many machines
+# =============================================================================
+# Read COURSE/06-matrix-builds.md alongside this file.
+#
+# A matrix multiplies out into one job per combination, all running in
+# parallel. It is the single highest-leverage feature in Actions: nine
+# variations of "does my code work here?" for the cost of writing one.
+# =============================================================================
+
+name: 06 - Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # A 3 x 3 matrix = 9 parallel jobs.
+  # -------------------------------------------------------------------------
+  test-matrix:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # fail-fast: true (the DEFAULT) cancels every sibling the moment one
+      # fails. Fast, and cheap, but you only learn about one failure.
+      # false = let them all finish, so you see the full picture.
+      # Rule of thumb: false while debugging, true once things are stable.
+      fail-fast: false
+
+      # Cap concurrent jobs. Useful when a matrix would otherwise eat your
+      # whole runner allowance, or hammer a rate-limited external service.
+      max-parallel: 4
+
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['20', '22', '24']
+
+        # `exclude` removes specific combinations from the product.
+        exclude:
+          # macOS runners cost 10x Linux minutes. Test one version there.
+          - os: macos-latest
+            node: '20'
+          - os: macos-latest
+            node: '24'
+
+        # `include` is subtler, and has two distinct behaviours:
+        #   1. If it matches an existing combination, it ADDS variables to it.
+        #   2. If it matches nothing, it ADDS A WHOLE NEW JOB.
+        include:
+          # Behaviour 1: tag the ubuntu/22 job as our primary.
+          - os: ubuntu-latest
+            node: '22'
+            primary: true
+            label: reference build
+          # Behaviour 2: an extra job outside the grid entirely.
+          - os: ubuntu-22.04
+            node: '22'
+            label: older Ubuntu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # `shell: bash` forces bash even on Windows runners, which otherwise
+      # default to PowerShell. Without it, this step breaks on windows-latest.
+      # A matrix is very good at exposing assumptions like that.
+      - name: Report
+        shell: bash
+        run: |
+          echo "OS      : ${{ matrix.os }}"
+          echo "Node    : ${{ matrix.node }} (actual: $(node --version))"
+          echo "Label   : ${{ matrix.label || 'none' }}"
+          echo "Primary : ${{ matrix.primary || false }}"
+
+      # Steps can key off matrix values, so the "special" job in the grid
+      # does a little extra without needing its own job definition.
+      - name: Extra work on the reference build only
+        if: matrix.primary
+        shell: bash
+        run: |
+          echo "Running coverage on the reference build only..."
+          npm run test:coverage 2>&1 | tail -20 || true
+
+  # -------------------------------------------------------------------------
+  # A matrix built from JSON — the escape hatch when the list is dynamic.
+  # -------------------------------------------------------------------------
+  dynamic-matrix:
+    name: Dynamic matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: What would we test?
+        run: |
+          echo "A matrix can be generated at runtime by having one job emit"
+          echo "a JSON array as an output, and a second job use:"
+          echo ""
+          echo "    strategy:"
+          echo "      matrix:"
+          echo "        target: \${{ fromJSON(needs.discover.outputs.list) }}"
+          echo ""
+          echo "See Lesson 08 for job outputs, which is the missing piece."
+
+  # -------------------------------------------------------------------------
+  # A gate job. Branch protection cannot require a matrix job by name
+  # (the names contain the matrix values and change whenever you edit the
+  # matrix), so you require THIS one instead.
+  # -------------------------------------------------------------------------
+  matrix-passed:
+    name: All matrix jobs passed
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    # Without `if: always()`, this job is SKIPPED when a dependency fails —
+    # and a skipped required check can leave a PR stuck forever.
+    if: always()
+    steps:
+      - name: Check the result
+        run: |
+          echo "Matrix result: ${{ needs.test-matrix.result }}"
+          if [ "${{ needs.test-matrix.result }}" != "success" ]; then
+            echo "At least one matrix job did not succeed."
+            exit 1
+          fi
+          echo "Every combination passed."

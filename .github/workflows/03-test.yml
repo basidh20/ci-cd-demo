@@ -1,0 +1,88 @@
+# =============================================================================
+# LESSON 03 — Your first real CI: checkout, setup, install, test
+# =============================================================================
+# Read COURSE/03-real-ci.md alongside this file.
+#
+# This is the workflow that actually earns its keep. Four steps, and they are
+# the same four steps in roughly every CI pipeline on Earth:
+#
+#   1. Get the code          (actions/checkout)
+#   2. Get the toolchain     (actions/setup-node)
+#   3. Install dependencies  (npm ci)
+#   4. Run the tests         (npm test)
+# =============================================================================
+
+name: 03 - Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run the test suite
+    runs-on: ubuntu-latest
+
+    steps:
+      # STEP 1 -----------------------------------------------------------
+      # The runner starts EMPTY. It does not have your code. It does not
+      # know your repository exists. `checkout` is what clones it.
+      #
+      # Forgetting this step gives you "no such file or directory" and a
+      # confusing five minutes. Almost every job needs it first.
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        # `with:` passes inputs to an action, like function arguments.
+        with:
+          # Depth 1 = grab only the latest commit. Faster. Use 0 only when
+          # you need full history (changelogs, tags, git blame).
+          fetch-depth: 1
+
+      # STEP 2 -----------------------------------------------------------
+      # `uses:` runs someone else's packaged action instead of a shell
+      # command. This one installs a specific Node version.
+      #
+      # Pin the version explicitly. "Whatever Node the runner happens to
+      # ship this month" is not a build you can reproduce.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # One line, and setup-node caches ~/.npm keyed on your lockfile.
+          # Lesson 07 explains what is actually happening here.
+          cache: npm
+
+      # STEP 3 -----------------------------------------------------------
+      # `npm ci` NOT `npm install`. The difference matters in CI:
+      #   npm install - may update package-lock.json, resolves loosely
+      #   npm ci      - obeys the lockfile exactly, errors if it is stale,
+      #                 deletes node_modules first. Reproducible.
+      - name: Install dependencies
+        run: npm ci
+
+      # STEP 4 -----------------------------------------------------------
+      # The whole contract between your project and GitHub Actions is the
+      # EXIT CODE. Zero means pass, anything else means fail. Actions does
+      # not read your output, parse your logs, or understand your framework.
+      # It runs the command and checks one number.
+      - name: Run tests
+        run: npm test
+
+      # A step that reports even when the tests failed. `always()` overrides
+      # the default "skip the rest of the job after a failure" behaviour.
+      # Lesson 08 covers status functions properly.
+      - name: Report result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### Tests passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Tests failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Reproduce it locally with:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+            echo "npm ci && npm test" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

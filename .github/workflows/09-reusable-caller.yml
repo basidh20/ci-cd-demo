@@ -1,0 +1,82 @@
+# =============================================================================
+# LESSON 09b — CALLING a reusable workflow (the caller)
+# =============================================================================
+# Read COURSE/09-reuse.md alongside this file.
+#
+# Look how short this is. All the logic lives in 09-reusable-build.yml; this
+# file just decides WHEN to run it and WITH WHAT.
+#
+# In a real organisation the callee lives in a central repo and every team
+# writes a caller like this one, giving you a genuinely standard pipeline
+# that you can fix in one place.
+# =============================================================================
+
+name: 09b - Reusable Caller
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Calling a reusable workflow uses `uses:` AT JOB LEVEL — not inside steps.
+  # A job that calls a workflow has NO `runs-on:` and NO `steps:`.
+  # Putting either one here is a common and confusing error.
+  # -------------------------------------------------------------------------
+  quick-build:
+    name: Quick build
+    uses: ./.github/workflows/09-reusable-build.yml
+    with:
+      node-version: '22'
+      run-tests: true
+      artifact-name: site-quick
+    # Pass named secrets explicitly...
+    secrets:
+      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+    # ...or hand over every secret at once with:
+    #   secrets: inherit
+    # Convenient, and a bigger blast radius. Prefer naming them.
+
+  # The same workflow again with different arguments — one definition,
+  # two behaviours. This is the entire point of reuse.
+  legacy-node-build:
+    name: Legacy Node build
+    uses: ./.github/workflows/09-reusable-build.yml
+    with:
+      node-version: '20'
+      run-tests: false
+      artifact-name: site-legacy
+
+  # A normal job that consumes the reusable workflow's OUTPUTS.
+  report:
+    name: Report
+    runs-on: ubuntu-latest
+    needs: [quick-build, legacy-node-build]
+    if: always()
+    steps:
+      - name: Show what the called workflows returned
+        run: |
+          echo "quick-build artifact : ${{ needs.quick-build.outputs.artifact-name }}"
+          echo "quick-build sha      : ${{ needs.quick-build.outputs.build-sha }}"
+          echo "legacy artifact      : ${{ needs.legacy-node-build.outputs.artifact-name }}"
+          echo ""
+          echo "quick-build result   : ${{ needs.quick-build.result }}"
+          echo "legacy build result  : ${{ needs.legacy-node-build.result }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Reuse in action"
+            echo ""
+            echo "One workflow definition, called twice with different inputs:"
+            echo ""
+            echo "| Call | Node | Tests | Artifact | Result |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| quick-build | 22 | yes | \`${{ needs.quick-build.outputs.artifact-name }}\` | ${{ needs.quick-build.result }} |"
+            echo "| legacy-node-build | 20 | no | \`${{ needs.legacy-node-build.outputs.artifact-name }}\` | ${{ needs.legacy-node-build.result }} |"
+            echo ""
+            echo "**Limits worth knowing:** you can nest reusable workflows up"
+            echo "to 4 levels deep, and a single run may call at most 20 of them."
+          } >> "$GITHUB_STEP_SUMMARY"

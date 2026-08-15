@@ -1,0 +1,25 @@
+{
+  "name": "quote-of-the-day",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A tiny zero-dependency static site generator, used as a lab rat for learning GitHub Actions",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "lint": "node scripts/lint.js",
+    "build": "node src/build.js",
+    "check:workflows": "node scripts/check-workflows.js",
+    "ci": "npm run lint && npm test && npm run build && npm run check:workflows"
+  },
+  "keywords": [
+    "github-actions",
+    "ci-cd",
+    "tutorial"
+  ],
+  "license": "MIT"
+}

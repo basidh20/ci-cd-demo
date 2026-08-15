@@ -1,0 +1,160 @@
+# =============================================================================
+# LESSON 12 — CAPSTONE: the workflow you would actually ship
+# =============================================================================
+# Read COURSE/12-capstone.md alongside this file.
+#
+# Lessons 01-11 each isolated one idea, with commentary. This file is what
+# those ideas look like when they stop being lessons and become a pipeline:
+# terse, defensive, and boring in the way production things should be.
+#
+# Everything here has appeared before. If a line puzzles you, the lesson
+# that introduced it is named in the section header.
+# =============================================================================
+
+name: 12 - Capstone CI/CD
+
+on:                                        # Lesson 02
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_matrix:
+        description: Skip the cross-platform matrix (faster feedback)
+        type: boolean
+        default: false
+
+permissions:                               # Lesson 10
+  contents: read
+
+concurrency:                               # Lesson 08
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:                                       # Lesson 05
+  NODE_VERSION: '22'
+
+jobs:
+  # --- Fast feedback first. Fails in ~30s if the basics are wrong. --------
+  checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4                 # must precede a local action
+      - uses: ./.github/actions/setup-project     # Lesson 09
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run lint
+      - run: npm run check:workflows
+
+  # --- The real test suite, across platforms. ----------------------------
+  test:
+    name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: checks
+    strategy:                                     # Lesson 06
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ['20', '22']
+        include:
+          - os: windows-latest
+            node: '22'
+          - os: macos-latest
+            node: '22'
+    steps:
+      - uses: actions/checkout@v4                 # Lesson 03
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm                              # Lesson 07
+      - run: npm ci
+      - run: npm test
+
+  # --- Build once, and only once. ----------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [checks, test]
+    outputs:                                      # Lesson 08
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-project
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Derive a version
+        id: meta
+        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - run: npm run build
+
+      - name: Stamp the version
+        run: echo "${{ steps.meta.outputs.version }}" > dist/VERSION
+
+      - uses: actions/upload-artifact@v4          # Lesson 07
+        with:
+          name: site
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  # --- Deploy. Guarded three ways. ---------------------------------------
+  deploy:
+    name: Deploy to Pages
+    runs-on: ubuntu-latest
+    needs: build
+    # 1. success() is explicit, because ANY `if:` removes the implicit one.
+    # 2. only from main.
+    # 3. never from a pull request, even one targeting main.
+    if: |
+      success()
+      && github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request'
+    permissions:                                  # Lesson 10
+      contents: read
+      pages: write
+      id-token: write
+    environment:                                  # Lesson 11
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: dist/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # --- Always report, whatever happened. ---------------------------------
+  report:
+    name: Report
+    runs-on: ubuntu-latest
+    needs: [checks, test, build, deploy]
+    if: always()                                  # Lesson 08
+    steps:
+      - name: Build the summary
+        run: |
+          {
+            echo "# Pipeline ${{ github.run_number }}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Static checks | ${{ needs.checks.result }} |"
+            echo "| Tests | ${{ needs.test.result }} |"
+            echo "| Build | ${{ needs.build.result }} |"
+            echo "| Deploy | ${{ needs.deploy.result }} |"
+            echo ""
+            echo "Version: \`${{ needs.build.outputs.version }}\`"
+            echo "Commit: \`${GITHUB_SHA:0:7}\` on \`${{ github.ref_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the run if any stage failed
+        if: contains(needs.*.result, 'failure')
+        run: exit 1

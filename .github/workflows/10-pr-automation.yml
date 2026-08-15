@@ -1,0 +1,154 @@
+# =============================================================================
+# LESSON 10 — Permissions, GITHUB_TOKEN, and automating pull requests
+# =============================================================================
+# Read COURSE/10-permissions-and-automation.md alongside this file.
+#
+# Every run gets a temporary credential called GITHUB_TOKEN. You do not
+# create it and you cannot see it; it is minted when the run starts and
+# revoked when it ends. It is what lets a workflow comment on a PR, add a
+# label, or push a commit.
+#
+# THE RULE: grant the least permission that does the job. Start from
+# `permissions: {}` and add only what breaks.
+# =============================================================================
+
+name: 10 - PR Automation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# WORKFLOW-LEVEL PERMISSIONS. Setting any `permissions:` block sets ALL
+# scopes not listed to `none`. So this is genuinely restrictive, not additive.
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # A job that only reads. Inherits `contents: read` from above.
+  # -------------------------------------------------------------------------
+  analyse:
+    name: Analyse the changes
+    runs-on: ubuntu-latest
+    outputs:
+      files_changed: ${{ steps.diff.outputs.count }}
+      touches_workflows: ${{ steps.diff.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # We need history to diff against the base branch. `fetch-depth: 0`
+          # gets everything — the one case where the slow option is correct.
+          fetch-depth: 0
+
+      - name: Diff against the base branch
+        id: diff
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          if [ -z "$BASE" ]; then
+            echo "Not a pull request; nothing to diff."
+            echo "count=0"     >> "$GITHUB_OUTPUT"
+            echo "workflows=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          COUNT=$(echo "$CHANGED" | grep -c . || true)
+
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          if echo "$CHANGED" | grep -q '^\.github/workflows/'; then
+            WORKFLOWS=true
+          else
+            WORKFLOWS=false
+          fi
+
+          echo "count=$COUNT"          >> "$GITHUB_OUTPUT"
+          echo "workflows=$WORKFLOWS"  >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------------
+  # A job that WRITES back to the PR. It needs extra permission, granted
+  # here at job level so the rest of the workflow stays read-only.
+  # -------------------------------------------------------------------------
+  comment:
+    name: Comment on the PR
+    runs-on: ubuntu-latest
+    needs: analyse
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write   # required to comment or label
+      issues: write          # PRs are issues underneath; labels live here
+    steps:
+      - uses: actions/checkout@v4
+
+      # `gh` (the GitHub CLI) is preinstalled on every GitHub-hosted runner.
+      # It needs GH_TOKEN in the environment; it does not pick up the token
+      # automatically.
+      - name: Post a review summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILES: ${{ needs.analyse.outputs.files_changed }}
+          TOUCHES_WORKFLOWS: ${{ needs.analyse.outputs.touches_workflows }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          BODY="**Automated check**
+
+          - Files changed: ${FILES}
+          - Touches workflow files: ${TOUCHES_WORKFLOWS}
+          - Run: [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})
+
+          _Posted by GitHub Actions, Lesson 10._"
+
+          gh pr comment "$PR_NUMBER" --body "$BODY"
+
+      - name: Label PRs that change CI configuration
+        if: needs.analyse.outputs.touches_workflows == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "ci" || \
+            echo "Label 'ci' does not exist yet — create it in the repo first."
+
+  # -------------------------------------------------------------------------
+  # THE FORK PROBLEM, and the safe way around it.
+  # -------------------------------------------------------------------------
+  explain-forks:
+    name: Why fork PRs are different
+    runs-on: ubuntu-latest
+    steps:
+      - name: The rules
+        run: |
+          cat <<'NOTES'
+          When a PR arrives from a FORK, `pull_request` runs with:
+            - a READ-ONLY GITHUB_TOKEN, and
+            - NO access to your secrets.
+
+          That is not a bug. Without it, anyone on the internet could open a
+          PR whose workflow prints your production keys.
+
+          There is a second trigger, `pull_request_target`, which DOES get
+          secrets and write access. It exists for exactly this case, and it
+          is genuinely dangerous:
+
+            pull_request_target runs the workflow file from the BASE branch,
+            but if you then `checkout` the PR's head ref, you are executing
+            a stranger's code with your secrets in the environment.
+
+          If you ever use it:
+            - do NOT check out the PR head, or
+            - if you must, run NO code from it (no npm ci, no build), and
+            - never interpolate PR text into a `run:` block.
+
+          The safe pattern for "test a fork PR, then comment" is two
+          workflows: `pull_request` builds with no secrets and uploads an
+          artifact; `workflow_run` picks it up afterwards with permissions.
+          NOTES

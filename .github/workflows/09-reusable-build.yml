@@ -1,0 +1,110 @@
+# =============================================================================
+# LESSON 09a — A REUSABLE WORKFLOW (the callee)
+# =============================================================================
+# Read COURSE/09-reuse.md alongside this file.
+#
+# This workflow cannot be triggered by a push, a PR, or a button. Its only
+# trigger is `workflow_call`, which means: another workflow invokes it, the
+# way you would call a function.
+#
+# Composite action vs reusable workflow — the distinction that matters:
+#
+#   COMPOSITE ACTION    bundles STEPS.  Runs inside a job you already have.
+#                       Cannot choose its own runner. Cannot fan out.
+#
+#   REUSABLE WORKFLOW   bundles JOBS.   Brings its own runners, can contain
+#                       a whole matrix, its own dependency graph, everything.
+#
+# Rule of thumb: repeated steps -> composite action.
+#                repeated pipelines -> reusable workflow.
+# =============================================================================
+
+name: 09a - Reusable Build (callee)
+
+on:
+  workflow_call:
+    # Typed parameters, exactly like a function signature.
+    inputs:
+      node-version:
+        description: Node.js version to build with
+        required: false
+        default: '22'
+        type: string
+      run-tests:
+        description: Whether to run the test suite
+        required: false
+        default: true
+        type: boolean
+      artifact-name:
+        description: Name to give the uploaded build artifact
+        required: false
+        default: site
+        type: string
+
+    # Secrets must be declared before a caller can pass them. Alternatively
+    # the caller writes `secrets: inherit` to hand over all of them.
+    secrets:
+      DEPLOY_TOKEN:
+        description: Token used by a real deploy (optional here)
+        required: false
+
+    # Values the caller can read afterwards.
+    outputs:
+      artifact-name:
+        description: The artifact that was uploaded
+        value: ${{ jobs.build.outputs.artifact-name }}
+      build-sha:
+        description: The commit that was built
+        value: ${{ jobs.build.outputs.build-sha }}
+
+jobs:
+  build:
+    name: Build with Node ${{ inputs.node-version }}
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ inputs.artifact-name }}
+      build-sha: ${{ steps.info.outputs.sha }}
+
+    steps:
+      # Checkout MUST come first: the composite action below is referenced
+      # by path, so its action.yml has to exist on disk before GitHub can
+      # even read it. This is the one hard rule about local actions.
+      - uses: actions/checkout@v4
+
+      # Using OUR OWN composite action from the same repository. The `./`
+      # prefix means "a local path in this checkout" — it replaces the
+      # setup-node + npm ci pair that every other job here repeats.
+      - name: Set up the project
+        uses: ./.github/actions/setup-project
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        if: inputs.run-tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Record build info
+        id: info
+        run: echo "sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether a deploy token was provided
+        env:
+          TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "A DEPLOY_TOKEN was passed in by the caller."
+          else
+            echo "No DEPLOY_TOKEN. Fine — this build does not deploy."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/
+          retention-days: 3

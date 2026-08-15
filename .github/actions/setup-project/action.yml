@@ -1,0 +1,94 @@
+# =============================================================================
+# A COMPOSITE ACTION — your own reusable step
+# =============================================================================
+# Read COURSE/09-reuse.md alongside this file.
+#
+# Notice the four lines that appear at the top of nearly every job in this
+# repo: checkout, setup-node, npm ci. Copy-pasted eight times. When the Node
+# version changes you must edit eight files and you will miss one.
+#
+# A composite action bundles steps into a single reusable `uses:`.
+#
+# Use it like this, from any job in this repository:
+#
+#   - uses: actions/checkout@v4          # <-- REQUIRED FIRST. See below.
+#   - uses: ./.github/actions/setup-project
+#     with:
+#       node-version: '22'
+#
+# WHY ISN'T CHECKOUT INSIDE THIS ACTION? It is the obvious thing to want,
+# and it cannot work. A local action is referenced by PATH (`./.github/...`),
+# so GitHub has to read this very file off the runner's disk before it can
+# run anything in it — and the file only gets there via checkout. Put
+# checkout inside, make this your first step, and you get:
+#
+#   Error: Can't find 'action.yml' under '/home/runner/work/repo/repo/
+#          .github/actions/setup-project'
+#
+# So: callers check out, then call this. That is also why every setup-style
+# action you will find on the Marketplace leaves checkout to you.
+#
+# THREE KINDS OF ACTION EXIST:
+#   composite  - a bundle of steps, written in YAML. Start here. No build.
+#   javascript - a Node program. Fast, cross-platform, needs bundling.
+#   docker     - any language, fully isolated, Linux runners only, slow start.
+#
+# THE FILE MUST BE NAMED action.yml (or action.yaml) and live in its own
+# directory. The directory name is what you `uses:`.
+# =============================================================================
+
+name: Setup Project
+description: Check out the code, install Node, and install dependencies
+
+# Inputs are this action's parameters. Referenced as `inputs.<name>`.
+inputs:
+  node-version:
+    description: Which Node.js version to install
+    required: false
+    default: '22'
+  install:
+    description: Run npm ci (set false for jobs with no dependencies)
+    required: false
+    default: 'true'
+
+# Outputs let the calling job read values back out.
+outputs:
+  node-version:
+    description: The Node version that actually got installed
+    # In a COMPOSITE action, outputs reference steps via `steps.<id>.outputs`
+    # — note there is no `needs` here, because there are no jobs.
+    value: ${{ steps.detect.outputs.version }}
+  cache-hit:
+    description: Whether the dependency cache was restored
+    value: ${{ steps.node.outputs.cache-hit }}
+
+runs:
+  # `composite` is what makes this a bundle of steps rather than a program.
+  using: composite
+  steps:
+    # (No checkout here — see the note at the top of this file.)
+    - name: Set up Node.js
+      id: node
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    # GOTCHA: every `run:` step in a composite action MUST declare `shell:`.
+    # It has no default. Omit it and you get:
+    #   "Required property is missing: shell"
+    # This is the single most common composite-action error.
+    - name: Install dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      run: npm ci
+
+    - name: Detect the installed version
+      id: detect
+      shell: bash
+      run: echo "version=$(node --version)" >> "$GITHUB_OUTPUT"
+
+    - name: Report
+      shell: bash
+      run: |
+        echo "Project ready. Node $(node --version), npm $(npm --version)."
